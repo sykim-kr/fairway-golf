@@ -41,7 +41,9 @@ window.fairwayTagTemplate = function (config) {
       var data = {site_id:'fairway_golf', environment:config.environment, taxonomy_version:'1.0', content_version:'1.0', page_name:'golf_swing_guide', page_path:'/fairway-golf/', page_view_id:pageId, viewport_group:innerWidth<=580?'mobile':innerWidth<=850?'tablet':'desktop'};
       Object.keys(props || {}).forEach(function (key) { data[key] = props[key]; });
       window.dataLayer = window.dataLayer || [];
+      if(config.data_layer_only) window.dataLayer.push({fairway_properties:null});
       window.dataLayer.push({event:'fairway_' + name, fairway_event:name, fairway_properties:data});
+      if(config.data_layer_only) return;
       try { window.mixpanel.fairway.track(name, data); } catch (error) { /* Analytics must never block navigation. */ }
     }
     function lessonData(card) {
