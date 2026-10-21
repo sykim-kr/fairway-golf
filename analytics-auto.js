@@ -4,7 +4,7 @@
   const $=id=>document.getElementById(id), repo='sykim-kr/fairway-golf';
   const google='https://tagmanager.googleapis.com/tagmanager/v2/';
   const github='https://api.github.com/repos/'+repo;
-  const runKey='fairway_auto_install_v2', settingsKey='fairway_auto_public_v2';
+  const runKey='fairway_auto_install_v5', settingsKey='fairway_auto_public_v2';
   const fields=['mp-token','region','environment','gtm-id','account-id','container-id'];
   const hosts={us:'https://api.mixpanel.com',eu:'https://api-eu.mixpanel.com',in:'https://api-in.mixpanel.com'};
   let busy=false,lastGoogle=0,run=null,stage='입력 정보 확인';
@@ -25,10 +25,10 @@
   }
   function fieldError(field,text){const error=Error(text);error.field=field;return error;}
 
-  function receipt(){ $('receipt').textContent=run?JSON.stringify({workspace:run.workspace,trigger_id:run.trigger,tag_id:run.tag,version:run.version,published:!!run.published,commit:run.commit,web_verified:!!run.verified,pending:run.pending||null},null,2):''; }
+  function receipt(){ $('receipt').textContent=run?JSON.stringify({workspace:run.workspace,resources:run.resources,counts:run.counts,version:run.version,published:!!run.published,commit:run.commit,web_verified:!!run.verified,pending:run.pending||null},null,2):''; }
   function persist(){sessionStorage.setItem(runKey,JSON.stringify(run));receipt();}
   function clearTokens(){$('oauth-token').value='';$('github-token').value='';}
-  function config(){return {mixpanel_token:$('mp-token').value.trim(),api_host:hosts[$('region').value],region:$('region').value,environment:$('environment').value,gtm_id:$('gtm-id').value.trim(),account:$('account-id').value.trim(),container:$('container-id').value.trim(),include_impressions:$('impressions').checked,template_version:2};}
+  function config(){return {mixpanel_token:$('mp-token').value.trim(),api_host:hosts[$('region').value],region:$('region').value,environment:$('environment').value,gtm_id:$('gtm-id').value.trim(),account:$('account-id').value.trim(),container:$('container-id').value.trim(),include_impressions:$('impressions').checked,template_version:5};}
   function restore(c){if(!c)return;$('mp-token').value=c.mixpanel_token||'';$('region').value=c.region||'us';$('environment').value=c.environment||'production';$('gtm-id').value=c.gtm_id||'';$('account-id').value=c.account||'';$('container-id').value=c.container||'';$('impressions').checked=c.include_impressions!==false;}
   try{restore(run?.config||JSON.parse(localStorage.getItem(settingsKey)||'null'));}catch{}
   receipt();if(run)message(run.pending?'중단된 요청의 결과가 불명확합니다. 작업 기록의 리소스를 확인해야 합니다. 자동 재시도는 차단됩니다.':run.verified?'이 탭에서 완료한 설치 기록을 불러왔습니다.':'이 탭의 작업 기록을 불러왔습니다. 동일 설정과 인증 토큰을 입력하면 이어서 실행합니다.');
@@ -46,7 +46,8 @@
   }
   function setBusy(value){busy=value;document.querySelectorAll('#settings input,#settings select,#settings button').forEach(e=>e.disabled=value);$('verify').disabled=value;$('install').textContent=value?'설정 중… 잠시 기다려 주세요':'태그 매니저 설정하기';}
   async function request(provider,path,creds,method='GET',body,allow404=false){
-    stage=provider==='github'?(method==='PUT'?'GitHub 사이트 코드 반영':'GitHub 저장소 접근 확인'):path.includes(':publish')?'GTM 버전 게시':path.includes(':create_version')?'GTM 버전 생성':path.includes('/triggers')?'GTM 트리거 생성':path.includes('/tags')?'GTM 태그 확인·생성':path.includes('/versions')?'GTM 버전 확인':path.includes('/workspaces')?'GTM 작업 공간 생성·확인':'GTM 컨테이너 확인';
+    stage=provider==='github'?(method==='PUT'?'GitHub 사이트 코드 반영':'GitHub 저장소 접근 확인'):path.includes(':publish')?'GTM 버전 게시':path.includes(':create_version')?'GTM 버전 생성':path.includes('/triggers')?'GTM 트리거 생성':path.includes('/tags')?'GTM 태그 확인·생성':path.includes('/variables')?'GTM 변수 확인·생성':path.includes('/versions')?'GTM 버전 확인':path.includes('/workspaces')?'GTM 작업 공간 생성·확인':'GTM 컨테이너 확인';
+    if(run?.pending)stage+=' · '+run.pending;
     if(provider==='google'){const delay=Math.max(0,4200-(Date.now()-lastGoogle));if(delay)await new Promise(resolve=>setTimeout(resolve,delay));lastGoogle=Date.now();}
     const url=provider==='google'?google+path:github+path;
     const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),25000);
@@ -103,8 +104,30 @@
     if(helper.type!=='file')throw Error('분석 동의 로더 파일이 없습니다.');
     return {base,file};
   }
-  function buildTag(c){return '<script>\n('+window.fairwayTagTemplate.toString()+')('+JSON.stringify({mixpanel_token:c.mixpanel_token,api_host:c.api_host,environment:c.environment,include_impressions:c.include_impressions})+');\n</script>';}
-  function verifyVersion(v,tag){if(v.tag?.length!==1||v.tag[0].name!=='Fairway Mixpanel v1'||!v.tag[0].parameter?.some(p=>p.key==='html'&&p.value===tag))throw Error('다른 태그 또는 예상과 다른 태그 내용이 포함되어 있어 게시하지 않습니다.');}
+  const taxonomy=window.fairwayTaxonomy;
+  function empty(v){return !['tag','trigger','variable','zone','customTemplate'].some(k=>(v?.[k]||[]).length);}
+  function signature(v){return v?String(v.containerVersionId)+':'+String(v.fingerprint||''):null;}
+  async function listResources(kind,creds){
+    let items=[],page='';do{const result=await request('google',run.workspace+'/'+kind+'s'+(page?'?pageToken='+encodeURIComponent(page):''),creds);items=items.concat(result[kind]||[]);page=result.nextPageToken||'';}while(page);return items;
+  }
+  async function configure(c,creds){
+    run.resources=run.resources||{variable:{},trigger:{},tag:{}};
+    const initial=taxonomy.plan(c);
+    for(const kind of ['variable','trigger','tag']){
+      const current=await listResources(kind,creds),desired=taxonomy.plan(c,run.resources.trigger)[kind];
+      if(current.some(r=>!desired.some(d=>d.name===r.name)))throw Error('다른 '+kind+' 설정이 발견되었습니다. 전용 작업 공간을 확인하세요.');
+      for(let i=0;i<desired.length;i++){
+        const item=desired[i],matches=current.filter(x=>x.name===item.name);
+        if(matches.length>1)throw Error('중복 리소스: '+item.name);
+        const existing=matches[0],idKey=kind+'Id';
+        message('2/5 '+({variable:'변수',trigger:'트리거',tag:'태그'}[kind])+' 설정 '+(i+1)+'/'+desired.length+' · '+item.name);
+        if(existing&&taxonomy.equal(item,existing)){run.resources[kind][item.name]=existing[idKey];persist();continue;}
+        const endpoint=run.workspace+'/'+kind+'s'+(existing?'/'+existing[idKey]:'');
+        await mutate(item.name+' 설정','google',endpoint,creds,existing?'PUT':'POST',{...item,...(existing?{fingerprint:existing.fingerprint}:{})},r=>{if(!r[idKey])throw Error('리소스 ID 응답이 없습니다: '+item.name);run.resources[kind][item.name]=r[idKey];});
+      }
+    }
+    run.counts={tags:initial.tag.length,triggers:initial.trigger.length,variables:initial.variable.length};persist();
+  }
   async function verifyWeb(){
     if(!run?.commit){message('GitHub 설치 코드 커밋이 아직 없습니다.',true);return false;}
     stage='GitHub Pages 사이트 반영 확인';
@@ -112,7 +135,7 @@
     if(!response.ok)throw Error('사이트 응답을 확인하지 못했습니다.');
     const html=await response.text();
     if(!html.includes(installBlock(run.config))){message('GTM 게시·GitHub 커밋 완료. GitHub Pages 반영 대기 중입니다. 잠시 후 설치 반영 다시 확인을 누르세요.');return false;}
-    run.verified=true;persist();message('설치 및 게시 완료: GTM 버전 게시와 GitHub Pages 설치 코드 반영을 확인했습니다. 홈페이지에서 분석 동의 후 레슨을 클릭하고 Mixpanel에서 수신을 확인하세요.');return true;
+    run.verified=true;persist();message('택소노미 설정 성공: 태그 '+run.counts.tags+'개 · 변수 '+run.counts.variables+'개 · 트리거 '+run.counts.triggers+'개를 검증하고 게시했습니다. 사이트 설치 코드도 반영되었습니다.\n홈페이지에서 분석 동의 후 레슨을 클릭하고 Mixpanel에서 실제 수신을 확인하세요.');return true;
   }
   $('settings').addEventListener('submit',async event=>{
     event.preventDefault();if(busy||!validate(true))return;
@@ -122,34 +145,34 @@
     try{
       message('1/5 컨테이너 및 GitHub 파일 확인 중…');const {base}=await preflight(c,creds);
       if(!run){run={config:c,operation:crypto.randomUUID(),pending:null};persist();}
-      if(run.verified){await verifyWeb();return;}
-      const tag=buildTag(c);
+      run.verified=false;persist();
+      const desired=taxonomy.plan(c);
       if(!run.version){
         if(!run.workspace){
           const live=await request('google',base+'/versions:live',creds,'GET',undefined,true);
-          if(live?.tag?.length)throw Error('이미 게시된 태그가 있는 컨테이너입니다. 최초 설치용 빈 컨테이너를 사용하세요.');
-          message('2/5 전용 워크스페이스 생성 중…');
-          await mutate('워크스페이스 생성','google',base+'/workspaces',creds,'POST',{name:'Fairway Auto '+run.operation,description:'Fairway Analytics Studio v2 dedicated installation'},r=>{if(!r.workspaceId)throw Error('Workspace ID 응답이 없습니다.');run.workspace=base+'/workspaces/'+r.workspaceId;});
+          let matches=false;try{if(live){taxonomy.verify(live,c);matches=true;}}catch{}
+          if(matches){run.version=base+'/versions/'+live.containerVersionId;run.published=true;run.counts={tags:desired.tag.length,triggers:desired.trigger.length,variables:desired.variable.length};persist();}
+          else if(!empty(live)&&!taxonomy.legacy(live,c))throw Error('기존 설정이 현재 Fairway 택소노미와 다릅니다. 다른 태그를 덮어쓰지 않았습니다. 빈 Web 컨테이너 또는 동일 입력값으로 설치한 Fairway 컨테이너를 사용하세요.');
+          run.baseline=signature(live);persist();
+          if(!run.version){message('2/5 전용 워크스페이스 생성 중…');
+          await mutate('워크스페이스 생성','google',base+'/workspaces',creds,'POST',{name:'Fairway Auto '+run.operation,description:'Fairway taxonomy v5 dedicated installation'},r=>{if(!r.workspaceId)throw Error('Workspace ID 응답이 없습니다.');run.workspace=base+'/workspaces/'+r.workspaceId;});}
         }
-        const listed=await request('google',run.workspace+'/tags',creds);
-        if(listed.nextPageToken||(listed.tag||[]).some(t=>t.tagId!==run.tag))throw Error('전용 워크스페이스에 예상하지 못한 태그가 있습니다. 게시를 중단합니다.');
-        if(!run.trigger)await mutate('트리거 생성','google',run.workspace+'/triggers',creds,'POST',{name:'Fairway DOM Ready v1',type:'domReady'},r=>{if(!r.triggerId)throw Error('Trigger ID 응답이 없습니다.');run.trigger=r.triggerId;});
-        if(!run.tag)await mutate('태그 생성','google',run.workspace+'/tags',creds,'POST',{name:'Fairway Mixpanel v1',type:'html',parameter:[{type:'template',key:'html',value:tag},{type:'boolean',key:'supportDocumentWrite',value:'false'}],firingTriggerId:[run.trigger],tagFiringOption:'oncePerLoad',notes:'Fairway taxonomy 1.0. Homepage only. GTM loaded after visitor consent.'},r=>{if(!r.tagId)throw Error('Tag ID 응답이 없습니다.');run.tag=r.tagId;});
+        if(!run.version){await configure(c,creds);
         message('3/5 버전 생성 및 컴파일 확인 중…');
         const created=await mutate('버전 생성','google',run.workspace+':create_version',creds,'POST',{name:'Fairway '+run.operation,notes:'Install Fairway taxonomy 1.0'},r=>{if(r.containerVersion?.containerVersionId)run.version=base+'/versions/'+r.containerVersion.containerVersionId;run.compileError=!!r.compilerError;run.syncError=!!(r.syncStatus?.mergeConflict||r.syncStatus?.syncError);if(!run.version)throw Error('버전 생성 결과를 확인하지 못했습니다.');});
-        if(created.compilerError||run.syncError)throw Error('GTM 컴파일·동기화 오류가 발생했습니다. 생성 버전을 검토하세요.');
+        if(created.compilerError||run.syncError)throw Error('GTM 컴파일·동기화 오류가 발생했습니다. 생성 버전을 검토하세요.');}
       }
       if(run.compileError||run.syncError)throw Error('저장된 버전에 컴파일·동기화 오류가 있습니다. GTM에서 검토해야 합니다.');
       if(!run.published){
-        const version=await request('google',run.version,creds);verifyVersion(version,tag);
+        const version=await request('google',run.version,creds);taxonomy.verify(version,c);
         const live=await request('google',base+'/versions:live',creds,'GET',undefined,true);
         if(live?.containerVersionId===version.containerVersionId){run.published=true;persist();}
         else {
-          if(live?.tag?.length)throw Error('다른 태그가 새로 게시되어 있습니다. 덮어쓰지 않고 중단합니다.');
+          if(signature(live)!==run.baseline)throw Error('설치 중 다른 GTM 버전이 게시되었습니다. 덮어쓰지 않고 중단합니다.');
           await mutate('버전 게시','google',run.version+':publish?fingerprint='+encodeURIComponent(version.fingerprint),creds,'POST',undefined,r=>{if(r.compilerError||r.containerVersion?.containerVersionId!==version.containerVersionId)throw Error('게시 응답을 검증하지 못했습니다.');run.published=true;});
         }
       }
-      const live=await request('google',base+'/versions:live',creds);if(base+'/versions/'+live.containerVersionId!==run.version)throw Error('현재 라이브 버전이 예상 버전과 다릅니다.');verifyVersion(live,tag);
+      const live=await request('google',base+'/versions:live',creds);if(base+'/versions/'+live.containerVersionId!==run.version)throw Error('현재 라이브 버전이 예상 버전과 다릅니다.');taxonomy.verify(live,c);
       message('4/5 GitHub 설치 코드 반영 중…');
       const file=await request('github','/contents/index.html?ref=main',creds),source=fromBase64(file.content),updated=patchHtml(source,c);
       if(updated!==source)await mutate('GitHub 파일 커밋','github','/contents/index.html',creds,'PUT',{message:'Install consent-gated GTM '+c.gtm_id,content:toBase64(updated),sha:file.sha,branch:'main'},r=>{if(!r.commit?.sha)throw Error('커밋 SHA 응답이 없습니다.');run.commit=r.commit.sha;});
