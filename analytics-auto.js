@@ -7,9 +7,24 @@
   const runKey='fairway_auto_install_v2', settingsKey='fairway_auto_public_v2';
   const fields=['mp-token','region','environment','gtm-id','account-id','container-id'];
   const hosts={us:'https://api.mixpanel.com',eu:'https://api-eu.mixpanel.com',in:'https://api-in.mixpanel.com'};
-  let busy=false,lastGoogle=0,run=null;
+  let busy=false,lastGoogle=0,run=null,stage='입력 정보 확인';
   try{run=JSON.parse(sessionStorage.getItem(runKey)||'null');}catch{}
-  function message(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error);}
+  function message(text,error=false){
+    const success=!error&&!!run?.verified, pending=!error&&!success&&!!run?.commit;
+    $('status').textContent=text;$('status').classList.toggle('error',error);
+    $('result').hidden=false;$('result').className='card result'+(error?' error':success?' success':pending?' pending':'');
+    $('result-title').textContent=error?'설정 실패 · '+stage:success?'설정 성공':pending?'사이트 반영 대기 중':'설정 진행 중';
+    $('verify').hidden=!run?.commit||success;
+  }
+  function fail(error){
+    const field=error.field;
+    if(field){$(field).setAttribute('aria-invalid','true');$(field).setAttribute('aria-describedby','status');}
+    const completed=run?.pending?'마지막 쓰기 요청의 적용 여부 미확인':run?.commit?'GTM 게시와 GitHub 코드 반영 완료':run?.published?'GTM 게시 완료 · 사이트 코드 미반영':run?.version?'GTM 버전 생성 완료 · 게시 미완료':run?.workspace?'GTM 작업 공간 생성 완료 · 설치 미완료':'GTM·GitHub 변경 없음';
+    message(error.message+'\n\n현재 상태: '+completed+(run?.pending?'\n쓰기 결과 확인이 필요합니다. 중복 방지를 위해 재시도를 중단했습니다. 작업 기록을 확인하세요.':''),true);
+    $('result').scrollIntoView?.({behavior:'smooth',block:'center'});
+  }
+  function fieldError(field,text){const error=Error(text);error.field=field;return error;}
+
   function receipt(){ $('receipt').textContent=run?JSON.stringify({workspace:run.workspace,trigger_id:run.trigger,tag_id:run.tag,version:run.version,published:!!run.published,commit:run.commit,web_verified:!!run.verified,pending:run.pending||null},null,2):''; }
   function persist(){sessionStorage.setItem(runKey,JSON.stringify(run));receipt();}
   function clearTokens(){$('oauth-token').value='';$('github-token').value='';}
@@ -20,16 +35,37 @@
   $('clear-tokens').addEventListener('click',clearTokens);window.addEventListener('pagehide',clearTokens);
   $('save').addEventListener('click',()=>{try{localStorage.setItem(settingsKey,JSON.stringify(config()));$('save-status').textContent='공개 설정만 저장했습니다. Google·GitHub 인증 토큰은 제외했습니다.';}catch{$('save-status').textContent='이 브라우저에서 설정을 저장할 수 없습니다.';}});
   function credentials(){const g=$('oauth-token').value.trim(),h=$('github-token').value.trim();if(!g||!h||/\s/.test(g)||/\s/.test(h))throw Error('공백 없는 Google·GitHub 액세스 토큰을 입력하세요. Bearer 접두사는 제외합니다.');return {g,h};}
-  function validate(requireAuthorization){$('gtm-id').value=$('gtm-id').value.trim().toUpperCase();const auth=$('authorize');auth.required=requireAuthorization;const valid=$('settings').reportValidity();auth.required=true;return valid;}
-  function setBusy(value){busy=value;document.querySelectorAll('#settings input,#settings select,#settings button').forEach(e=>e.disabled=value);$('verify').disabled=value;}
+  function validate(requireAuthorization){
+    stage='입력 정보 확인';
+    document.querySelectorAll('[aria-invalid]').forEach(e=>{e.removeAttribute('aria-invalid');e.removeAttribute('aria-describedby');});
+    $('gtm-id').value=$('gtm-id').value.trim().toUpperCase();
+    const checks=[['mp-token','Mixpanel Project Token',/^[a-fA-F0-9]{32}$/,'32자리 프로젝트 토큰을 입력하세요.'],['gtm-id','GTM 공개 컨테이너 ID',/^GTM-[A-Z0-9]+$/,'GTM-으로 시작하는 ID를 입력하세요.'],['account-id','GTM Account ID',/^[0-9]+$/,'숫자 ID만 입력하세요.'],['container-id','GTM API Container ID',/^[0-9]+$/,'숫자 ID만 입력하세요.'],['oauth-token','Google OAuth Access Token',/^\S+$/,'access_token 전체 값만 입력하세요. 공백·Bearer 접두사는 제외하세요.'],['github-token','GitHub Fine-grained PAT',/^\S+$/,'GitHub 토큰 전체 값만 입력하세요.']];
+    for(const [id,label,pattern,hint] of checks){$(id).value=$(id).value.trim();if(!pattern.test($(id).value)){fail(fieldError(id,label+': '+hint));$(id).focus?.({preventScroll:true});return false;}}
+    if(requireAuthorization&&!$('authorize').checked){fail(fieldError('authorize','GTM 게시 및 사이트 적용 동의에 체크한 뒤 다시 눌러주세요.'));return false;}
+    return true;
+  }
+  function setBusy(value){busy=value;document.querySelectorAll('#settings input,#settings select,#settings button').forEach(e=>e.disabled=value);$('verify').disabled=value;$('install').textContent=value?'설정 중… 잠시 기다려 주세요':'태그 매니저 설정하기';}
   async function request(provider,path,creds,method='GET',body,allow404=false){
+    stage=provider==='github'?(method==='PUT'?'GitHub 사이트 코드 반영':'GitHub 저장소 접근 확인'):path.includes(':publish')?'GTM 버전 게시':path.includes(':create_version')?'GTM 버전 생성':path.includes('/triggers')?'GTM 트리거 생성':path.includes('/tags')?'GTM 태그 확인·생성':path.includes('/versions')?'GTM 버전 확인':path.includes('/workspaces')?'GTM 작업 공간 생성·확인':'GTM 컨테이너 확인';
     if(provider==='google'){const delay=Math.max(0,4200-(Date.now()-lastGoogle));if(delay)await new Promise(resolve=>setTimeout(resolve,delay));lastGoogle=Date.now();}
     const url=provider==='google'?google+path:github+path;
     const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),25000);
     try{
       const response=await fetch(url,{method,headers:{Authorization:'Bearer '+(provider==='google'?creds.g:creds.h),Accept:'application/json',...(body?{'Content-Type':'application/json'}:{}),...(provider==='github'?{'X-GitHub-Api-Version':'2022-11-28'}:{})},body:body?JSON.stringify(body):undefined,credentials:'omit',redirect:'error',cache:'no-store',referrerPolicy:'no-referrer',signal:ctl.signal});
       if(allow404&&response.status===404)return null;
-      if(!response.ok){const err=Error((provider==='google'?'Google':'GitHub')+' API HTTP '+response.status+' — '+({401:'토큰이 만료되었거나 잘못되었습니다.',403:'OAuth 범위·사용자 권한·API 활성화 또는 호출 한도를 확인하세요.',404:'리소스 ID 또는 저장소 접근 권한을 확인하세요.',409:'동시 수정 또는 버전 충돌입니다. 파일·워크스페이스 상태를 확인하세요.',422:'요청 또는 브랜치 보호 정책을 확인하세요.',429:'호출 한도에 도달했습니다. 잠시 후 재개하세요.'}[response.status]||'요청을 완료하지 못했습니다.'));err.definitive=response.status>=400&&response.status<500;throw err;}
+      if(!response.ok){
+        const g=provider==='google',who=g?'Google':'GitHub',status=response.status;
+        const hint=status===401?(g?'Google OAuth Access Token이 만료되었거나 유효하지 않습니다. OAuth Playground에서 새 access_token을 발급받아 교체하세요.':'GitHub Fine-grained PAT가 만료되었거나 유효하지 않습니다. 새 토큰을 입력하세요.')
+          :status===403?(g?'Google 권한을 확인하세요: edit.containers, edit.containerversions, publish 범위와 GTM 사용자 게시 권한, Tag Manager API 활성화가 필요합니다. 호출 한도 초과일 수도 있습니다.':'GitHub 토큰의 소유자 sykim-kr, 대상 fairway-golf, Contents: Read and write 권한을 확인하세요. 브랜치 보호 정책도 확인하세요.')
+          :status===404?(g?'GTM Account ID·API Container ID 및 해당 계정의 접근 권한을 확인하세요.':'GitHub 토큰이 fairway-golf 저장소에 접근할 수 있는지 확인하세요.')
+          :status===409?'동시 수정으로 충돌했습니다. GTM/GitHub의 최신 상태를 확인한 뒤 다시 시도하세요.'
+          :status===429?'API 호출 한도를 초과했습니다. 잠시 후 다시 시도하세요.'
+          :status===400||status===422?'API가 요청 내용을 거부했습니다. 이 오류 단계와 HTTP 번호를 전달해 주세요. 권한·리소스 설정 또는 설치 요청 확인이 필요합니다.'
+          :'서비스 오류입니다. 잠시 후 상태를 확인하세요.';
+        const err=Error(who+' API HTTP '+status+'\n'+hint);err.definitive=status>=400&&status<500;
+        if(status===401||status===403)err.field=g?'oauth-token':'github-token';
+        throw err;
+      }
       return await response.json();
     }catch(error){if(error instanceof TypeError||error.name==='AbortError')throw Error('네트워크·CORS 오류 또는 시간 초과입니다. 쓰기 요청이었다면 원격 작업은 완료되었을 수 있습니다.');throw error;}finally{clearTimeout(timer);}
   }
@@ -58,8 +94,8 @@
     const publicIds=[container.publicId,...(Array.isArray(container.tagIds)?container.tagIds:[])].filter(v=>typeof v==='string'&&/^GTM-[A-Z0-9]+$/i.test(v)).map(v=>v.toUpperCase());
     const contexts=Array.isArray(container.usageContext)?container.usageContext:[];
     const detail='Account ID: '+c.account+' / API Container ID: '+c.container+' / Google 공개 ID: '+(publicIds.join(', ')||'응답 없음')+' / 유형: '+(contexts.join(', ')||'응답 없음');
-    if(!publicIds.includes(c.gtm_id))throw Error('공개 컨테이너 ID가 일치하지 않습니다. 입력값: '+c.gtm_id+'\n'+detail+'\nGTM 화면에서 같은 컨테이너의 GTM- ID를 확인하세요.');
-    if(!contexts.includes('web'))throw Error('Web 컨테이너가 아닙니다.\n'+detail+'\n이 설치 도구에는 웹사이트용 Web 컨테이너가 필요합니다.');
+    if(!publicIds.includes(c.gtm_id))throw fieldError('gtm-id','공개 컨테이너 ID가 일치하지 않습니다. 입력값: '+c.gtm_id+'\n'+detail+'\nGTM 화면에서 같은 컨테이너의 GTM- ID를 확인하세요.');
+    if(!contexts.includes('web'))throw fieldError('container-id','Web 컨테이너가 아닙니다.\n'+detail+'\n이 설치 도구에는 웹사이트용 Web 컨테이너가 필요합니다.');
     const file=await request('github','/contents/index.html?ref=main',creds);
     if(file.type!=='file'||file.encoding!=='base64')throw Error('GitHub index.html 파일을 읽지 못했습니다.');
     patchHtml(fromBase64(file.content),c);
@@ -71,17 +107,17 @@
   function verifyVersion(v,tag){if(v.tag?.length!==1||v.tag[0].name!=='Fairway Mixpanel v1'||!v.tag[0].parameter?.some(p=>p.key==='html'&&p.value===tag))throw Error('다른 태그 또는 예상과 다른 태그 내용이 포함되어 있어 게시하지 않습니다.');}
   async function verifyWeb(){
     if(!run?.commit){message('GitHub 설치 코드 커밋이 아직 없습니다.',true);return false;}
+    stage='GitHub Pages 사이트 반영 확인';
     const response=await fetch('./?fairway_check='+Date.now(),{cache:'no-store',credentials:'omit'});
     if(!response.ok)throw Error('사이트 응답을 확인하지 못했습니다.');
     const html=await response.text();
     if(!html.includes(installBlock(run.config))){message('GTM 게시·GitHub 커밋 완료. GitHub Pages 반영 대기 중입니다. 잠시 후 설치 반영 다시 확인을 누르세요.');return false;}
     run.verified=true;persist();message('설치 및 게시 완료: GTM 버전 게시와 GitHub Pages 설치 코드 반영을 확인했습니다. 홈페이지에서 분석 동의 후 레슨을 클릭하고 Mixpanel에서 수신을 확인하세요.');return true;
   }
-  $('preflight').addEventListener('click',async()=>{if(busy||!validate(false))return;setBusy(true);try{await preflight(config(),credentials());message('컨테이너 ID와 GitHub 파일 읽기 확인 완료. 쓰기·게시 권한 및 Mixpanel 토큰 유효성은 아직 검증하지 않았습니다.');}catch(e){message(e.message,true);}finally{setBusy(false);}});
   $('settings').addEventListener('submit',async event=>{
     event.preventDefault();if(busy||!validate(true))return;
     const c=config();let creds;
-    try{creds=credentials();if(run?.pending)throw Error('쓰기 결과가 불명확한 이전 요청이 있습니다: '+run.pending+'. 아래 작업 기록으로 GTM/GitHub 상태를 먼저 확인하세요. 중복 생성을 방지하기 위해 재실행하지 않습니다.');if(run&&JSON.stringify(run.config)!==JSON.stringify(c))throw Error('진행 중인 작업과 입력 설정이 다릅니다. 이 탭의 기존 설정으로 복원해 재개하세요.');}catch(e){message(e.message,true);return;}
+    try{creds=credentials();if(run?.pending)throw Error('쓰기 결과가 불명확한 이전 요청이 있습니다: '+run.pending+'. 아래 작업 기록으로 GTM/GitHub 상태를 먼저 확인하세요. 중복 생성을 방지하기 위해 재실행하지 않습니다.');if(run&&JSON.stringify(run.config)!==JSON.stringify(c))throw Error('진행 중인 작업과 입력 설정이 다릅니다. 이 탭의 기존 설정으로 복원해 재개하세요.');}catch(e){fail(e);return;}
     setBusy(true);
     try{
       message('1/5 컨테이너 및 GitHub 파일 확인 중…');const {base}=await preflight(c,creds);
@@ -120,10 +156,10 @@
       else {run.commit=run.commit||'existing_installation';persist();}
       message('5/5 GitHub Pages 반영 확인 중…');
       for(let attempt=0;attempt<6;attempt++){if(await verifyWeb())break;if(attempt<5)await new Promise(resolve=>setTimeout(resolve,10000));}
-    }catch(e){message(e.message+(run?.pending?'\n결과가 불명확하여 자동 재시도를 차단했습니다. 완료된 단계는 아래에 표시됩니다.':run?'\n완료된 단계는 보존됩니다. 같은 설정과 유효한 토큰으로 이어서 실행할 수 있습니다.':'\n설치 전 확인에서 중단했습니다. GTM 생성·게시와 GitHub 수정은 시작하지 않았습니다.'),true);}
+    }catch(e){fail(e);}
     finally{creds=null;clearTokens();setBusy(false);receipt();}
   });
-  $('verify').addEventListener('click',async()=>{if(busy)return;try{await verifyWeb();}catch(e){message(e.message,true);}});
+  $('verify').addEventListener('click',async()=>{if(busy)return;try{await verifyWeb();}catch(e){fail(e);}});
   // Pure helpers for repeatable local tests; no credentials exposed.
   window.fairwayAutoHelpers={patchHtml,toBase64,fromBase64,installBlock};
 })();
