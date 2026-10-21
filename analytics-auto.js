@@ -55,7 +55,11 @@
   async function preflight(c,creds){
     const base='accounts/'+c.account+'/containers/'+c.container;
     const container=await request('google',base,creds);
-    if(container.publicId!==c.gtm_id||!container.usageContext?.includes('web'))throw Error('GTM 공개 ID·API ID가 일치하는 Web 컨테이너인지 확인하세요.');
+    const publicIds=[container.publicId,...(Array.isArray(container.tagIds)?container.tagIds:[])].filter(v=>typeof v==='string'&&/^GTM-[A-Z0-9]+$/i.test(v)).map(v=>v.toUpperCase());
+    const contexts=Array.isArray(container.usageContext)?container.usageContext:[];
+    const detail='Account ID: '+c.account+' / API Container ID: '+c.container+' / Google 공개 ID: '+(publicIds.join(', ')||'응답 없음')+' / 유형: '+(contexts.join(', ')||'응답 없음');
+    if(!publicIds.includes(c.gtm_id))throw Error('공개 컨테이너 ID가 일치하지 않습니다. 입력값: '+c.gtm_id+'\n'+detail+'\nGTM 화면에서 같은 컨테이너의 GTM- ID를 확인하세요.');
+    if(!contexts.includes('web'))throw Error('Web 컨테이너가 아닙니다.\n'+detail+'\n이 설치 도구에는 웹사이트용 Web 컨테이너가 필요합니다.');
     const file=await request('github','/contents/index.html?ref=main',creds);
     if(file.type!=='file'||file.encoding!=='base64')throw Error('GitHub index.html 파일을 읽지 못했습니다.');
     patchHtml(fromBase64(file.content),c);
@@ -116,7 +120,7 @@
       else {run.commit=run.commit||'existing_installation';persist();}
       message('5/5 GitHub Pages 반영 확인 중…');
       for(let attempt=0;attempt<6;attempt++){if(await verifyWeb())break;if(attempt<5)await new Promise(resolve=>setTimeout(resolve,10000));}
-    }catch(e){message(e.message+(run?.pending?'\n결과가 불명확하여 자동 재시도를 차단했습니다. 완료된 단계는 아래에 표시됩니다.':'\n완료된 단계는 보존됩니다. 같은 설정과 유효한 토큰으로 이어서 실행할 수 있습니다.'),true);}
+    }catch(e){message(e.message+(run?.pending?'\n결과가 불명확하여 자동 재시도를 차단했습니다. 완료된 단계는 아래에 표시됩니다.':run?'\n완료된 단계는 보존됩니다. 같은 설정과 유효한 토큰으로 이어서 실행할 수 있습니다.':'\n설치 전 확인에서 중단했습니다. GTM 생성·게시와 GitHub 수정은 시작하지 않았습니다.'),true);}
     finally{creds=null;clearTokens();setBusy(false);receipt();}
   });
   $('verify').addEventListener('click',async()=>{if(busy)return;try{await verifyWeb();}catch(e){message(e.message,true);}});
